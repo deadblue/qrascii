@@ -1,0 +1,5 @@
+package qrascii
+
+var blockChars = []rune{
+	0x2588, 0x2584, 0x2580, 0x20,
+}
