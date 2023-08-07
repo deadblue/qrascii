@@ -2,15 +2,24 @@ package qrascii
 
 import (
 	"image"
-	_ "image/png"
 	"io"
 )
 
-type parser struct {
+type _Parser struct {
 	im image.Image
+
+	// The bound of QRCode
+	bounds image.Rectangle
+	// Size of a dot
+	dotSize int
+	//
+	dotThreshold int
+
+	// QRCode size
+	Size int
 }
 
-func (p *parser) isBlack(x, y int) bool {
+func (p *_Parser) isBlack(x, y int) bool {
 	// Get color at point
 	c := p.im.At(x, y)
 	// Check color
@@ -22,9 +31,9 @@ func (p *parser) isBlack(x, y int) bool {
 	return gray < 127
 }
 
-func (p *parser) locateQrcode(bounds *image.Rectangle) (err error) {
-	bounds.Min.X, bounds.Min.Y = -1, -1
-	bounds.Max.X, bounds.Max.Y = -1, -1
+func (p *_Parser) locate() (err error) {
+	p.bounds.Min.X, p.bounds.Min.Y = -1, -1
+	p.bounds.Max.X, p.bounds.Max.Y = -1, -1
 	// Locate QRcode
 	ib := p.im.Bounds()
 	// Lookup left-top corner
@@ -33,7 +42,7 @@ func (p *parser) locateQrcode(bounds *image.Rectangle) (err error) {
 		for x := ib.Min.X; x < ib.Max.X; x++ {
 			found = p.isBlack(x, y)
 			if found {
-				bounds.Min.X, bounds.Min.Y = x, y
+				p.bounds.Min.X, p.bounds.Min.Y = x, y
 				break
 			}
 		}
@@ -41,80 +50,92 @@ func (p *parser) locateQrcode(bounds *image.Rectangle) (err error) {
 			break
 		}
 	}
-	if bounds.Min.X < 0 {
+	if p.bounds.Min.X < 0 {
 		return ErrInvalidQrcode
 	}
 	// Lookup right-top corner
-	for x := ib.Max.X - 1; x > bounds.Min.X; x-- {
-		if p.isBlack(x, bounds.Min.Y) {
-			bounds.Max.X = x + 1
+	for x := ib.Max.X - 1; x > p.bounds.Min.X; x-- {
+		if p.isBlack(x, p.bounds.Min.Y) {
+			p.bounds.Max.X = x + 1
 			break
 		}
 	}
-	if bounds.Max.X < 0 {
+	if p.bounds.Max.X < 0 {
 		return ErrInvalidQrcode
 	}
 	// Lookup left-bottom corner
-	for y := ib.Max.Y - 1; y > bounds.Min.Y; y-- {
-		if p.isBlack(bounds.Min.X, y) {
-			bounds.Max.Y = y + 1
+	for y := ib.Max.Y - 1; y > p.bounds.Min.Y; y-- {
+		if p.isBlack(p.bounds.Min.X, y) {
+			p.bounds.Max.Y = y + 1
 			break
 		}
 	}
-	if bounds.Max.Y < 0 {
-		err = ErrInvalidQrcode
+	if p.bounds.Max.Y < 0 {
+		return ErrInvalidQrcode
+	}
+	if p.bounds.Dx() != p.bounds.Dy() {
+		return ErrInvalidQrcode
 	}
 	return
 }
 
-func (p *parser) measureDotSize(bounds *image.Rectangle) (int, error) {
-	for i := 0; i < bounds.Dx(); i++ {
-		if !p.isBlack(bounds.Min.X+i, bounds.Min.Y+i) {
-			return i, nil
+func (p *_Parser) measure() (err error) {
+	for i := 0; i < p.bounds.Dx(); i++ {
+		if !p.isBlack(p.bounds.Min.X+i, p.bounds.Min.Y+i) {
+			p.dotSize = i
+			break
 		}
 	}
-	return 0, ErrInvalidQrcode
+	if p.dotSize == 0 {
+		return ErrInvalidQrcode
+	}
+	if p.bounds.Dx()%p.dotSize != 0 {
+		return ErrInvalidQrcode
+	}
+	p.Size = p.bounds.Dx() / p.dotSize
+	if (p.Size-21)%4 != 0 {
+		return ErrInvalidQrcode
+	}
+	p.dotThreshold = p.dotSize * p.dotSize * 8 / 10
+	return
 }
 
-func (p *parser) isDotBlack(o image.Point, size int, threshold int) bool {
+func (p *_Parser) Parse() (err error) {
+	if err = p.locate(); err != nil {
+		return
+	}
+	return p.measure()
+}
+
+func (p *_Parser) IsDotBlack(row, col int) bool {
 	blackCount := 0
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			if p.isBlack(o.X+x, o.Y+y) {
+	for y := 0; y < p.dotSize; y++ {
+		py := p.bounds.Min.Y + row*p.dotSize + y
+		for x := 0; x < p.dotSize; x++ {
+			px := p.bounds.Min.X + col*p.dotSize + x
+			if p.isBlack(px, py) {
 				blackCount += 1
 			}
 		}
 	}
-	return blackCount >= threshold
+	return blackCount >= p.dotThreshold
 }
 
 // ParseImage parses QRCode image.
 func ParseImage(im image.Image) (q *QRCode, err error) {
-	p := &parser{im: im}
-	// Locate qrcode
-	qb := &image.Rectangle{}
-	if err = p.locateQrcode(qb); err != nil {
-		return
-	}
-	// Measure dot size
-	var dotSize int
-	if dotSize, err = p.measureDotSize(qb); err != nil {
+	p := &_Parser{im: im}
+	if err = p.Parse(); err != nil {
 		return
 	}
 	// Make QRcode
 	q = &QRCode{
-		size: qb.Dx() / dotSize,
+		size:   p.Size,
+		matrix: make([]bool, p.Size*p.Size),
 	}
-	q.matrix = make([]bool, q.size*q.size)
 	// Convert dot map to matrix
-	threshold := dotSize * dotSize * 8 / 10
-	for i := 0; i < q.size; i++ {
-		for j := 0; j < q.size; j++ {
-			o := image.Point{
-				X: qb.Min.X + j*dotSize,
-				Y: qb.Min.Y + i*dotSize,
-			}
-			q.matrix[i*q.size+j] = p.isDotBlack(o, dotSize, threshold)
+	for row := 0; row < q.size; row++ {
+		for col := 0; col < q.size; col++ {
+			q.matrix[row*q.size+col] = p.IsDotBlack(row, col)
 		}
 	}
 	return

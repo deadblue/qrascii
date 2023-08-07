@@ -1,7 +1,6 @@
 package qrascii
 
 import (
-	"fmt"
 	_ "image/png"
 	"log"
 	"os"
@@ -17,6 +16,6 @@ func ExampleParse() {
 	if qr, err := Parse(f); err != nil {
 		log.Fatalf("Parse QRCode image failed: %s", err)
 	} else {
-		fmt.Printf("QRCode Ascii Art:\n%s\n", qr.ToAscii(2))
+		print(qr.String())
 	}
 }
